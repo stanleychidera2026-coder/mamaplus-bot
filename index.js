@@ -159,7 +159,7 @@ function startScheduler() {
 async function detectRisk(userMessage, userName, weeksPregnant) {
   try {
     const result = await groq.chat.completions.create({
-      model: 'llama3-8b-8192',
+      model: 'llama-3.3-70b-versatile',
       messages: [
         {
           role: 'system',
@@ -207,7 +207,7 @@ NO = safe to handle normally.`
 async function extractProfileData(conversation) {
   try {
     const result = await groq.chat.completions.create({
-      model: 'llama3-8b-8192',
+      model: 'llama-3.3-70b-versatile',
       messages: [
         {
           role: 'system',
@@ -348,7 +348,7 @@ app.post('/webhook', async (req, res) => {
   const [danger, completion] = await Promise.all([
     detectRisk(userMessage, session.name, session.weeksPregnant),
     groq.chat.completions.create({
-      model: 'llama3-8b-8192',
+      model: 'llama-3.3-70b-versatile',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         ...session.messages
