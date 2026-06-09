@@ -114,6 +114,28 @@ function startScheduler() {
       // 3. MEDICATION REMINDERS at user chosen time
       if (session.medications && session.medications.length > 0) {
         session.medications.forEach(med => {
+
+          // Skip inactive medications
+          if (!med.active) return
+
+          // Check if end date has passed — auto deactivate and celebrate
+          if (med.endDate) {
+            const today = new Date()
+            today.setHours(0, 0, 0, 0)
+            const end = new Date(med.endDate)
+            if (today > end) {
+              med.active = false
+              sendWhatsAppMessage(phone,
+                `Hi ${session.name}! 🎉\n` +
+                `Your ${med.name} course is now complete.\n` +
+                `Well done for staying consistent! 💚`
+              )
+              console.log(`Medication course completed: ${med.name} for ${phone}`)
+              return
+            }
+          }
+
+          // Send reminder at user chosen time
           if (med.hour === nigeriaHour) {
             sendWhatsAppMessage(phone,
               `Hi ${session.name}! 💊\n` +
@@ -125,7 +147,7 @@ function startScheduler() {
             console.log(`Medication reminder sent to ${phone} for ${med.name}`)
           }
 
-          // FOLLOW-UP 1 hour later if not confirmed
+          // Follow-up 1 hour later if not confirmed
           if (
             med.pendingFollowUp &&
             med.followUpHour === nigeriaHour &&
@@ -155,7 +177,7 @@ function startScheduler() {
   console.log('✅ Master scheduler started')
 }
 
-// ─── RISK DETECTION via separate Groq call ───
+// ─── AI RISK DETECTION ───
 async function detectRisk(userMessage, userName, weeksPregnant) {
   try {
     const result = await groq.chat.completions.create({
@@ -202,8 +224,7 @@ NO = safe to handle normally.`
   }
 }
 
-// ─── EXTRACT PROFILE DATA from Groq response ───
-// After each bot reply, ask Groq to extract any profile data mentioned
+// ─── AI PROFILE EXTRACTION ───
 async function extractProfileData(conversation) {
   try {
     const result = await groq.chat.completions.create({
@@ -219,7 +240,12 @@ Return ONLY a JSON object with these fields (use null if not found):
   "ancDate": "date in YYYY-MM-DD format if mentioned, convert any natural date like July 10 2025",
   "conditions": "health conditions mentioned e.g hypertension, diabetes, or none",
   "medications": [
-    { "name": "medication name", "hour": hour_as_number_0_to_23_or_null }
+    { 
+      "name": "medication name", 
+      "hour": hour_as_number_0_to_23_or_null,
+      "durationDays": number_of_days_or_null_if_ongoing,
+      "stopped": true_if_user_said_they_stopped_or_no_longer_take_it_else_false
+    }
   ],
   "onboardingComplete": true or false
 }
@@ -248,11 +274,14 @@ const SYSTEM_PROMPT = `
 You are MamaPlus, a warm maternal health assistant for pregnant women in Nigeria.
 
 STYLE:
-- Max 3 lines per message
-- One question at a time
+- One question at a time during onboarding
 - Warm, simple English
 - Max 1 emoji per message
 - Never diagnose or prescribe
+- For simple greetings or yes/no responses — keep it short (1-2 lines)
+- For health questions, symptoms, nutrition, baby development, or medication questions — give a FULL detailed helpful answer (up to 8 lines). Do not cut explanations short. Women need complete information.
+- For danger signs — be brief and urgent (3 lines max)
+- Always end detailed answers with one practical tip or action they can take today
 
 SCOPE — only discuss:
 - Pregnancy health and stages
@@ -260,12 +289,27 @@ SCOPE — only discuss:
 - Antenatal care and appointments
 - Baby development and movement
 - Warning signs and when to seek care
+- Medication education — explain what medications do, their purpose and common side effects
 - Medication reminders and adherence
 - Postpartum recovery
 - General women's health
 
+MEDICATION EDUCATION RULES:
+- You CAN explain what any medication is for and its common side effects
+- You CAN say if a medication is generally considered safe in pregnancy
+- You CANNOT tell a user what dose to take
+- You CANNOT tell a user to stop or change their prescribed medication
+- Always end medication explanations with: "Always follow your doctor's instructions for your specific prescription."
+
 OUT OF SCOPE — anything unrelated to pregnancy or maternal health:
 Reply exactly: "I can only help with pregnancy and maternal health questions. What would you like to know about your pregnancy? 😊"
+
+HANDLING INDIRECT OR VAGUE ANSWERS:
+- If user gives a vague answer like "I am very far gone" for weeks — ask kindly for the number of weeks
+- If user says "I don't know" for ANC date — say no problem and move to the next question
+- If user goes off topic emotionally like "my husband is stressing me" — acknowledge warmly then gently connect it back to pregnancy health
+- If user gives an unrelated answer — acknowledge it briefly then re-ask the question warmly
+- Never make the user feel bad for not answering directly
 
 ONBOARDING — collect these 5 things one at a time. Never skip or move on until each answer is complete and clear:
 
@@ -279,20 +323,26 @@ ONBOARDING — collect these 5 things one at a time. Never skip or move on until
 
 5. Medications:
    - Ask: "Do you take any medications like iron tablets or folic acid?"
-   - If YES but no time given — immediately ask: "What time do you take your [medication]? For example 8am or 2pm."
-   - If time is vague like "morning" or "evening" — ask: "What exact time? Like 7am or 8pm?"
-   - Do NOT move on until you have both medication name AND exact time.
+   - If YES — ask one question at a time:
+     a. "What is the name of the medication?"
+     b. "What time do you take it? For example 8am or 2pm." If vague like "morning" ask for exact time.
+     c. "How many days or weeks are you supposed to take it? Or say ongoing if it has no end date."
+   - Do NOT move on until you have medication name, time AND duration.
    - If NO medications — accept and move on.
 
 After all 5 complete — send a warm confirmation of their full profile in 2-3 lines and tell them they can ask anything anytime.
 
+STOPPING MEDICATIONS:
+- If user says they no longer take a medication, stopped taking it, finished it, or doctor said to stop — confirm warmly
+- Reply: "Understood! I have stopped your [medication name] reminder. Well done! 💚"
+
 AFTER ONBOARDING:
 - Answer based on their specific profile and pregnancy stage
-- Give practical advice freely — nutrition, symptoms, baby development, lifestyle
-- Keep every answer to 2-3 lines max
+- Give detailed practical advice — nutrition, symptoms, baby development, lifestyle, medications
+- Keep onboarding answers brief but make health question answers thorough and complete
 - Recommend clinic for any serious concern
 - If user says "taken" or confirms medication — reply: "Great job! Staying consistent with your medication is great for your baby. 💚"
-- If user seems worried or scared — be warm and reassuring first, then give guidance
+- If user seems worried or scared — be warm and reassuring first then give guidance
 
 HIGH RISK — if user describes any danger sign or emergency:
 Line 1: Acknowledge their concern briefly without diagnosing
@@ -328,7 +378,22 @@ app.post('/webhook', async (req, res) => {
 
   const session = sessions[userPhone]
 
-  // Check if user confirms taking medication
+  // ── Check if user is stopping a medication ──
+  const stopPhrases = [
+    'no longer take', 'stopped taking', 'i stopped', 'finished my',
+    'doctor said stop', 'cancel reminder', 'stop reminder',
+    'dont take anymore', "don't take anymore", 'no more', 'i finished'
+  ]
+  if (stopPhrases.some(p => userMessage.toLowerCase().includes(p))) {
+    session.medications.forEach(med => {
+      if (userMessage.toLowerCase().includes(med.name.toLowerCase())) {
+        med.active = false
+        console.log(`Medication stopped by user: ${med.name} for ${userPhone}`)
+      }
+    })
+  }
+
+  // ── Check if user confirms taking medication ──
   const takenPhrases = ['taken', 'i have taken', 'already taken', 'yes i took', 'i took it', 'done']
   if (takenPhrases.some(p => userMessage.toLowerCase().includes(p))) {
     const pending = session.medications?.find(m => m.pendingFollowUp)
@@ -353,7 +418,7 @@ app.post('/webhook', async (req, res) => {
         { role: 'system', content: SYSTEM_PROMPT },
         ...session.messages
       ],
-      max_tokens: 150,
+      max_tokens: 400,
       temperature: 0.7,
     }).catch(err => {
       console.error('Groq error:', err.message)
@@ -393,19 +458,43 @@ app.post('/webhook', async (req, res) => {
       // Save medications with valid times only
       if (extracted.medications && extracted.medications.length > 0) {
         extracted.medications.forEach(med => {
+
+          // Handle stopped medications from extraction
+          if (med.stopped) {
+            const existing = session.medications.find(
+              m => m.name.toLowerCase() === med.name.toLowerCase()
+            )
+            if (existing) {
+              existing.active = false
+              console.log(`Medication deactivated via extraction: ${med.name}`)
+            }
+            return
+          }
+
+          // Add new medications with end date calculation
           if (med.name && med.hour !== null && med.hour !== undefined) {
             const exists = session.medications.find(
               m => m.name.toLowerCase() === med.name.toLowerCase()
             )
             if (!exists) {
+              const startDate = new Date()
+              const endDate = med.durationDays
+                ? new Date(
+                    startDate.getTime() + med.durationDays * 24 * 60 * 60 * 1000
+                  ).toISOString().split('T')[0]
+                : null
+
               session.medications.push({
                 name: med.name,
                 hour: med.hour,
                 takenToday: false,
                 pendingFollowUp: false,
-                followUpHour: null
+                followUpHour: null,
+                startDate: startDate.toISOString().split('T')[0],
+                endDate: endDate,
+                active: true
               })
-              console.log(`💊 Medication saved: ${med.name} at ${med.hour}:00 for ${userPhone}`)
+              console.log(`💊 Medication saved: ${med.name} at ${med.hour}:00 — ends: ${endDate || 'ongoing'} for ${userPhone}`)
             }
           }
         })
