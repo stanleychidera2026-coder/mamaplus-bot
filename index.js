@@ -55,6 +55,57 @@ function parseHour(timeStr) {
   return hour
 }
 
+// DAILY PREGNANCY TIP - sends at 10AM personalised to pregnancy week
+async function sendDailyTip(phone, name, week, conditions) {
+  try {
+    const topics = [
+      'baby development and size this week',
+      'nutrition and the best foods to eat today',
+      'common symptoms and how to manage them',
+      'sleep, rest and relaxation tips',
+      'mental health and emotional wellbeing',
+      'safe exercise and gentle movement',
+      'preparing for birth and what to expect soon'
+    ]
+
+    const nigeriaDayIndex = new Date().getUTCDay()
+    const todayTopic = topics[nigeriaDayIndex]
+    const isPostDelivery = week >= 40
+
+    const promptContent = isPostDelivery
+      ? `Daily newborn care tip for ${name || 'a new mother'} whose baby is approximately ${week - 40} weeks old. Topic: ${todayTopic}. Include one baby development fact, one feeding tip, and one self-care reminder for the mother. Keep it warm, practical and under 5 lines.`
+      : `Daily pregnancy tip for ${name || 'a pregnant woman'} at week ${week} of pregnancy. Health conditions: ${conditions || 'none'}. Topic: ${todayTopic}. Include one specific fact about week ${week}, one practical tip related to today's topic, and one action she can take today. Keep it warm and under 5 lines.`
+
+    const completion = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        {
+          role: 'system',
+          content: `You are MamaPlus, a warm maternal health assistant for pregnant women in Nigeria.
+Generate a short daily tip that is specific, warm and practical.
+Maximum 5 lines.
+Start with a relevant emoji and her name.
+Make the tip specific to her exact pregnancy week — not generic advice.
+End with one clear action she can take today.
+Never diagnose. Never prescribe. Keep language simple and encouraging.`
+        },
+        {
+          role: 'user',
+          content: promptContent
+        }
+      ],
+      max_tokens: 180,
+      temperature: 0.8,
+    })
+
+    const tip = completion.choices[0].message.content.trim()
+    await sendWhatsAppMessage(phone, tip)
+    console.log(`Daily tip sent to ${phone} — week ${week} — topic: ${todayTopic}`)
+  } catch (e) {
+    console.error('Daily tip error:', e.message)
+  }
+}
+
 function startScheduler() {
   setInterval(() => {
     const now = new Date()
@@ -111,14 +162,27 @@ function startScheduler() {
         }
       }
 
-      // 3. MEDICATION REMINDERS at user chosen time
+      // 3. DAILY PREGNANCY TIP at 10AM
+      if (nigeriaHour === 10 && session.weeksPregnant) {
+        const daysPassed = session.registrationDate
+          ? Math.floor((new Date() - new Date(session.registrationDate)) / (1000 * 60 * 60 * 24))
+          : 0
+        const currentWeek = Math.min(
+          parseInt(session.weeksPregnant) + Math.floor(daysPassed / 7),
+          42
+        )
+        session.currentWeek = currentWeek
+        sendDailyTip(phone, session.name, currentWeek, session.conditions)
+      }
+
+      // 4. MEDICATION REMINDERS at user chosen time
       if (session.medications && session.medications.length > 0) {
         session.medications.forEach(med => {
 
           // Skip inactive medications
           if (!med.active) return
 
-          // Check if end date has passed — auto deactivate and celebrate
+          // Check if end date has passed
           if (med.endDate) {
             const today = new Date()
             today.setHours(0, 0, 0, 0)
@@ -164,7 +228,7 @@ function startScheduler() {
         })
       }
 
-      // 4. RESET medication status at midnight
+      // 5. RESET medication status at midnight
       if (nigeriaHour === 0 && session.medications) {
         session.medications.forEach(med => {
           med.takenToday = false
@@ -177,7 +241,7 @@ function startScheduler() {
   console.log('✅ Master scheduler started')
 }
 
-// ─── AI RISK DETECTION ───
+// AI RISK DETECTION
 async function detectRisk(userMessage, userName, weeksPregnant) {
   try {
     const result = await groq.chat.completions.create({
@@ -224,7 +288,7 @@ NO = safe to handle normally.`
   }
 }
 
-// ─── AI PROFILE EXTRACTION ───
+// AI PROFILE EXTRACTION
 async function extractProfileData(conversation) {
   try {
     const result = await groq.chat.completions.create({
@@ -291,7 +355,7 @@ SCOPE — only discuss:
 - Warning signs and when to seek care
 - Medication education — explain what medications do, their purpose and common side effects
 - Medication reminders and adherence
-- Postpartum recovery
+- Postpartum recovery and newborn care
 - General women's health
 
 MEDICATION EDUCATION RULES:
@@ -363,22 +427,24 @@ app.post('/webhook', async (req, res) => {
 
   console.log(`📩 From ${userPhone}: ${userMessage}`)
 
-  // Create session for new user
+  // Create session for new user — includes registrationDate for week tracking
   if (!sessions[userPhone]) {
     sessions[userPhone] = {
       messages: [],
       name: null,
       weeksPregnant: null,
+      currentWeek: null,
       ancDate: null,
       conditions: null,
       medications: [],
-      onboardingComplete: false
+      onboardingComplete: false,
+      registrationDate: new Date().toISOString().split('T')[0]
     }
   }
 
   const session = sessions[userPhone]
 
-  // ── Check if user is stopping a medication ──
+  // Check if user is stopping a medication
   const stopPhrases = [
     'no longer take', 'stopped taking', 'i stopped', 'finished my',
     'doctor said stop', 'cancel reminder', 'stop reminder',
@@ -393,7 +459,7 @@ app.post('/webhook', async (req, res) => {
     })
   }
 
-  // ── Check if user confirms taking medication ──
+  // Check if user confirms taking medication
   const takenPhrases = ['taken', 'i have taken', 'already taken', 'yes i took', 'i took it', 'done']
   if (takenPhrases.some(p => userMessage.toLowerCase().includes(p))) {
     const pending = session.medications?.find(m => m.pendingFollowUp)
@@ -455,11 +521,10 @@ app.post('/webhook', async (req, res) => {
       if (extracted.conditions) session.conditions = extracted.conditions
       if (extracted.onboardingComplete) session.onboardingComplete = true
 
-      // Save medications with valid times only
       if (extracted.medications && extracted.medications.length > 0) {
         extracted.medications.forEach(med => {
 
-          // Handle stopped medications from extraction
+          // Handle stopped medications
           if (med.stopped) {
             const existing = session.medications.find(
               m => m.name.toLowerCase() === med.name.toLowerCase()
@@ -471,7 +536,7 @@ app.post('/webhook', async (req, res) => {
             return
           }
 
-          // Add new medications with end date calculation
+          // Add new medications with end date
           if (med.name && med.hour !== null && med.hour !== undefined) {
             const exists = session.medications.find(
               m => m.name.toLowerCase() === med.name.toLowerCase()
