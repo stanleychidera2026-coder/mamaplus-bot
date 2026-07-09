@@ -537,31 +537,55 @@ app.post('/webhook', async (req, res) => {
           }
 
           // Add new medications with end date
-          if (med.name && med.hour !== null && med.hour !== undefined) {
-            const exists = session.medications.find(
-              m => m.name.toLowerCase() === med.name.toLowerCase()
-            )
-            if (!exists) {
-              const startDate = new Date()
-              const endDate = med.durationDays
-                ? new Date(
-                    startDate.getTime() + med.durationDays * 24 * 60 * 60 * 1000
-                  ).toISOString().split('T')[0]
-                : null
+          // Add new medications with end date
+if (med.name) {
+  let hour = (med.hour !== null && med.hour !== undefined) ? med.hour : null
 
-              session.medications.push({
-                name: med.name,
-                hour: med.hour,
-                takenToday: false,
-                pendingFollowUp: false,
-                followUpHour: null,
-                startDate: startDate.toISOString().split('T')[0],
-                endDate: endDate,
-                active: true
-              })
-              console.log(`💊 Medication saved: ${med.name} at ${med.hour}:00 — ends: ${endDate || 'ongoing'} for ${userPhone}`)
-            }
-          }
+  // FALLBACK: if AI extraction missed the hour, try parsing it directly
+  // from the last few user messages (uses the existing parseHour() helper)
+  if (hour === null) {
+    const recentUserMsgs = session.messages
+      .filter(m => m.role === 'user')
+      .slice(-5)
+      .map(m => m.content)
+      .reverse()
+    for (const msg of recentUserMsgs) {
+      const parsed = parseHour(msg)
+      if (parsed !== null) {
+        hour = parsed
+        break
+      }
+    }
+  }
+
+  if (hour !== null) {
+    const exists = session.medications.find(
+      m => m.name.toLowerCase() === med.name.toLowerCase()
+    )
+    if (!exists) {
+      const startDate = new Date()
+      const endDate = med.durationDays
+        ? new Date(
+            startDate.getTime() + med.durationDays * 24 * 60 * 60 * 1000
+          ).toISOString().split('T')[0]
+        : null
+
+      session.medications.push({
+        name: med.name,
+        hour: hour,
+        takenToday: false,
+        pendingFollowUp: false,
+        followUpHour: null,
+        startDate: startDate.toISOString().split('T')[0],
+        endDate: endDate,
+        active: true
+      })
+      console.log(`💊 Medication saved: ${med.name} at ${hour}:00 — ends: ${endDate || 'ongoing'} for ${userPhone}`)
+    }
+  } else {
+    console.log(`⚠️ Could not determine time for medication "${med.name}" — will retry as conversation continues for ${userPhone}`)
+  }
+}
         })
       }
 
